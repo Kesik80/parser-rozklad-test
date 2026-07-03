@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/fetch-timetable.js": { "maxDuration": 60 },
+    "api/fetch-station.js":   { "maxDuration": 30 }
+  }
+}
