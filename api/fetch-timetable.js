@@ -1,3 +1,8 @@
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+const CACHE_TTL = 60 * 60 * 24; // 24 години — розклад поїзда змінюється рідко
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -5,6 +10,20 @@ export default async function handler(req, res) {
   const { tid } = req.query;
   if (!tid || !/^\d+$/.test(tid)) {
     return res.status(400).json({ error: 'Потрібен параметр tid (число)' });
+  }
+
+  const cacheKey = `timetable:${tid}`;
+
+  // 1. Пробуємо кеш
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate');
+      return res.status(200).json(cached);
+    }
+  } catch (e) {
+    console.warn('Redis GET помилка:', e.message);
   }
 
   const apiKey = process.env.SCRAPINGBEE_KEY;
@@ -25,8 +44,21 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: e.message });
   }
 
+  const result = parseTimetable(html, tid);
+
+  // 2. Зберігаємо в кеш тільки якщо парсинг дав хоч якісь станції
+  // (щоб не закешувати випадково порожню/биту відповідь)
+  if (result.stations && result.stations.length > 0) {
+    try {
+      await redis.set(cacheKey, result, { ex: CACHE_TTL });
+    } catch (e) {
+      console.warn('Redis SET помилка:', e.message);
+    }
+  }
+
+  res.setHeader('X-Cache', 'MISS');
   res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate');
-  return res.status(200).json(parseTimetable(html, tid));
+  return res.status(200).json(result);
 }
 
 function cleanTd(html) {

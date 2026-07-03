@@ -2,6 +2,11 @@
 // Завантажує сторінку станції та витягує всі TID поїздів
 // GET /api/fetch-station?sid=2803
 
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+const CACHE_TTL = 60 * 60 * 24; // 24 години — список поїздів майже не змінюється
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -9,6 +14,21 @@ export default async function handler(req, res) {
   const { sid } = req.query;
   if (!sid || !/^\d+$/.test(sid)) {
     return res.status(400).json({ error: 'Потрібен параметр sid (число)' });
+  }
+
+  const cacheKey = `station:${sid}`;
+
+  // 1. Пробуємо кеш
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate');
+      return res.status(200).json(cached);
+    }
+  } catch (e) {
+    console.warn('Redis GET помилка:', e.message);
+    // йдемо далі й вантажимо напряму, кеш не критичний
   }
 
   const apiKey = process.env.SCRAPINGBEE_KEY;
@@ -43,6 +63,16 @@ export default async function handler(req, res) {
     }
   }
 
+  const result = { sid, trains };
+
+  // 2. Зберігаємо в кеш (не блокуємо відповідь, якщо кеш впаде — не страшно)
+  try {
+    await redis.set(cacheKey, result, { ex: CACHE_TTL });
+  } catch (e) {
+    console.warn('Redis SET помилка:', e.message);
+  }
+
+  res.setHeader('X-Cache', 'MISS');
   res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate');
-  return res.status(200).json({ sid, trains });
+  return res.status(200).json(result);
 }
