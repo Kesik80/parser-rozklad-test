@@ -7,23 +7,26 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { tid } = req.query;
+  const { tid, refresh } = req.query;
   if (!tid || !/^\d+$/.test(tid)) {
     return res.status(400).json({ error: 'Потрібен параметр tid (число)' });
   }
 
   const cacheKey = `timetable:${tid}`;
+  const forceRefresh = refresh === '1' || refresh === 'true';
 
-  // 1. Пробуємо кеш
-  try {
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate');
-      return res.status(200).json(cached);
+  // 1. Пробуємо кеш (якщо не примусове оновлення)
+  if (!forceRefresh) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate');
+        return res.status(200).json(cached);
+      }
+    } catch (e) {
+      console.warn('Redis GET помилка:', e.message);
     }
-  } catch (e) {
-    console.warn('Redis GET помилка:', e.message);
   }
 
   const apiKey = process.env.SCRAPINGBEE_KEY;
@@ -42,6 +45,11 @@ export default async function handler(req, res) {
     html = await response.text();
   } catch(e) {
     return res.status(502).json({ error: e.message });
+  }
+
+  // Перевірка цілісності — якщо сторінка обірвана на півслові, не кешуємо биту відповідь
+  if (!/<\/html>/i.test(html)) {
+    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь від ScrapingBee, спробуйте ще раз' });
   }
 
   const result = parseTimetable(html, tid);
