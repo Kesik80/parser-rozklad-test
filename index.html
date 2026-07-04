@@ -109,6 +109,11 @@ pre { background:var(--bg-2); border-radius:8px; padding:10px; font-size:11px; c
   <button class="btn-icon" style="width:100%;margin-bottom:6px;font-size:13px" onclick="autoLoadTids()">🔄 Завантажити автоматично</button>
   <textarea id="tids" placeholder="28320, 28379, 28343..."></textarea>
   <div id="tidsStatus"></div>
+
+  <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
+    <input type="checkbox" id="forceRefresh" style="width:auto;accent-color:var(--accent);">
+    <span style="font-size:13px;color:var(--label-2);">Ігнорувати кеш (примусово оновити з сайту)</span>
+  </label>
 </div>
 
 <button class="btn btn-primary" id="parseBtn" onclick="startParsing()">🔍 Завантажити розклад</button>
@@ -183,10 +188,13 @@ async function autoLoadTids() {
   const allNums = [];
   _tidRouteMap = {};
 
+  const refresh = document.getElementById('forceRefresh').checked;
+
   for (const key of keys) {
     statusEl.textContent = `⏳ Завантажую список поїздів (${key})...`;
     try {
-      const res = await fetch(`/api/fetch-station?sid=${PRESETS[key].sid}`);
+      const url = `/api/fetch-station?sid=${PRESETS[key].sid}` + (refresh ? '&refresh=1' : '');
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data.trains?.length) throw new Error('Поїзди не знайдені');
@@ -240,7 +248,9 @@ function findTime(stations, wanted, useArr = false) {
 /* ========== FETCH ========== */
 async function fetchTrain(tid, attempt = 0) {
   try {
-    const res = await fetch(`/api/fetch-timetable?tid=${tid}`);
+    const refresh = document.getElementById('forceRefresh').checked;
+    const url = `/api/fetch-timetable?tid=${tid}` + (refresh ? '&refresh=1' : '');
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch(e) {
