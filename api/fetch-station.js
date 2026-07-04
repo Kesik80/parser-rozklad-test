@@ -56,15 +56,23 @@ export default async function handler(req, res) {
 
   // Витягуємо всі посилання на поїзди виду /rozklad-elektrychky/{slug}/
   // разом з номером поїзда (текст усередині <a>) і напрямком (from/to з двох сусідніх посилань на станції)
-  const trains = [];
+  const allTrains = [];
   const rowRegex = /<a[^>]*href="[^"]*\/rozklad-elektrychky\/([^"\/]+)\/"[^>]*>\s*(\d{3,5})\s*<\/a>.*?<a[^>]*\/rozklad-po-stantsii\/[^"]*"[^>]*>\s*([^<]+?)\s*<\/a>.*?<a[^>]*\/rozklad-po-stantsii\/[^"]*"[^>]*>\s*([^<]+?)\s*<\/a>/gs;
   let match;
   while ((match = rowRegex.exec(html)) !== null) {
     const [, slug, trainNum, from, to] = match;
-    if (!trains.find(t => t.slug === slug)) {
-      trains.push({ slug, trainNum, from: from.trim(), to: to.trim() });
+    if (!allTrains.find(t => t.slug === slug)) {
+      // Перевіряємо чи поїзд щоденний (chart1) чи "особливий графік" (chart2) —
+      // маркер знаходиться в межах ~800 символів після посилання на цей поїзд
+      const linkIdx = html.indexOf(`/rozklad-elektrychky/${slug}/`);
+      const windowHtml = html.slice(linkIdx, linkIdx + 800);
+      const isSpecial = /chart2\.png|особливому графіку/i.test(windowHtml);
+      allTrains.push({ slug, trainNum, from: from.trim(), to: to.trim(), daily: !isSpecial });
     }
   }
+
+  // За замовчуванням залишаємо тільки щоденні поїзди (виключаємо "особливий графік")
+  const trains = allTrains.filter(t => t.daily).map(({ daily, ...rest }) => rest);
 
   if (req.query.debug === '1') {
     const looseSlugs = [...html.matchAll(/\/rozklad-elektrychky\/([^"\/]+)\//g)].map(m => m[1]);
@@ -72,8 +80,9 @@ export default async function handler(req, res) {
     return res.status(200).json({
       station,
       totalLinksFound: uniqueLoose.length,
-      parsedTrains: trains.length,
-      missingSlugs: uniqueLoose.filter(s => !trains.find(t => t.slug === s)),
+      parsedDaily: trains.length,
+      excludedSpecialSchedule: allTrains.filter(t => !t.daily).map(t => ({ slug: t.slug, trainNum: t.trainNum })),
+      missingSlugs: uniqueLoose.filter(s => !allTrains.find(t => t.slug === s)),
       trains
     });
   }
