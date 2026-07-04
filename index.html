@@ -119,6 +119,7 @@ pre { background:var(--bg-2); border-radius:8px; padding:10px; font-size:11px; c
 <button class="btn btn-primary" id="parseBtn" onclick="startParsing()">🔍 Завантажити розклад</button>
 <button class="btn btn-retry" id="retryBtn" onclick="retryFailed()" style="display:none;">🔄 Дозавантажити</button>
 <button class="btn" id="copyAllBtn" onclick="copyAll()" style="display:none;background:var(--green);color:#000;">📋 Копіювати всі 4 напрямки</button>
+<button class="btn" id="saveFileBtn" onclick="saveAllToFile()" style="display:none;background:var(--warn);color:#000;">💾 Зберегти routes-data.js</button>
 
 <div class="status" id="status"></div>
 <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
@@ -418,6 +419,7 @@ function renderAll() {
   // Показуємо кнопку "Копіювати всі" якщо є результати
   if (results.length) {
     document.getElementById('copyAllBtn').style.display = 'block';
+    document.getElementById('saveFileBtn').style.display = 'block';
   }
 }
 
@@ -483,6 +485,32 @@ function copyAll() {
     btn.textContent = '✓ Скопійовано!';
     setTimeout(() => btn.textContent = '📋 Копіювати всі 4 напрямки', 2000);
   });
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function saveAllToFile() {
+  const blocks = [...document.querySelectorAll('#output pre')];
+  if (!blocks.length) return;
+  const js = 'const ROUTES = [\n' + blocks.map(b => b.textContent).join('\n') + '\n];\n';
+
+  const now = new Date();
+  const stamp = `${pad2(now.getDate())}.${pad2(now.getMonth()+1)}.${now.getFullYear()}_${pad2(now.getHours())}.${pad2(now.getMinutes())}`;
+  const filename = `routes-data_${stamp}.js`;
+
+  const blob = new Blob([js], { type: 'text/javascript' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  const btn = document.getElementById('saveFileBtn');
+  btn.textContent = '✓ Збережено!';
+  setTimeout(() => btn.textContent = '💾 Зберегти routes-data.js', 2000);
 }
 </script>
 </body>
