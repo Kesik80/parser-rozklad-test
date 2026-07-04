@@ -1,6 +1,7 @@
 // api/fetch-station.js
 // Завантажує сторінку станції та витягує всі TID поїздів
 // GET /api/fetch-station?sid=2803
+// GET /api/fetch-station?sid=2803&refresh=1  — обхід кешу, примусове оновлення
 
 import { Redis } from '@upstash/redis';
 
@@ -11,24 +12,26 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { sid } = req.query;
+  const { sid, refresh } = req.query;
   if (!sid || !/^\d+$/.test(sid)) {
     return res.status(400).json({ error: 'Потрібен параметр sid (число)' });
   }
 
   const cacheKey = `station:${sid}`;
+  const forceRefresh = refresh === '1' || refresh === 'true';
 
-  // 1. Пробуємо кеш
-  try {
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate');
-      return res.status(200).json(cached);
+  // 1. Пробуємо кеш (якщо не примусове оновлення)
+  if (!forceRefresh) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate');
+        return res.status(200).json(cached);
+      }
+    } catch (e) {
+      console.warn('Redis GET помилка:', e.message);
     }
-  } catch (e) {
-    console.warn('Redis GET помилка:', e.message);
-    // йдемо далі й вантажимо напряму, кеш не критичний
   }
 
   const apiKey = process.env.SCRAPINGBEE_KEY;
@@ -49,6 +52,11 @@ export default async function handler(req, res) {
     html = await response.text();
   } catch (e) {
     return res.status(502).json({ error: `Не вдалось завантажити: ${e.message}` });
+  }
+
+  // Перевірка цілісності — якщо сторінка обірвана на півслові, не парсимо й не кешуємо
+  if (!/<\/html>/i.test(html)) {
+    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь від ScrapingBee, спробуйте ще раз' });
   }
 
   // Витягуємо всі tid та номери поїздів
