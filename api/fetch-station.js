@@ -1,26 +1,26 @@
 // api/fetch-station.js
-// Завантажує сторінку станції та витягує всі TID поїздів
-// GET /api/fetch-station?sid=2803
-// GET /api/fetch-station?sid=2803&refresh=1  — обхід кешу, примусове оновлення
+// Завантажує сторінку станції на poizdato.net та витягує всі поїзди
+// GET /api/fetch-station?station=tereshky
+// GET /api/fetch-station?station=tereshky&refresh=1   — обхід кешу
+// GET /api/fetch-station?station=tereshky&debug=1     — діагностика парсингу
 
 import { Redis } from '@upstash/redis';
 
 const redis = Redis.fromEnv();
-const CACHE_TTL = 60 * 60 * 24; // 24 години — список поїздів майже не змінюється
+const CACHE_TTL = 60 * 60 * 24; // 24 години
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { sid, refresh } = req.query;
-  if (!sid || !/^\d+$/.test(sid)) {
-    return res.status(400).json({ error: 'Потрібен параметр sid (число)' });
+  const { station, refresh } = req.query;
+  if (!station || !/^[a-z0-9-]+$/.test(station)) {
+    return res.status(400).json({ error: 'Потрібен параметр station (слаг станції, напр. tereshky)' });
   }
 
-  const cacheKey = `station:${sid}`;
+  const cacheKey = `pstation:${station}`;
   const forceRefresh = refresh === '1' || refresh === 'true';
 
-  // 1. Пробуємо кеш (якщо не примусове оновлення)
   if (!forceRefresh) {
     try {
       const cached = await redis.get(cacheKey);
@@ -34,70 +34,52 @@ export default async function handler(req, res) {
     }
   }
 
-  const apiKey = process.env.SCRAPINGBEE_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'SCRAPINGBEE_KEY не налаштований' });
-  }
-
-  const targetUrl = `https://swrailway.gov.ua/timetable/eltrain3-5/?sid=${sid}`;
-  const proxyUrl = `https://app.scrapingbee.com/api/v1/?api_key=${apiKey}&url=${encodeURIComponent(targetUrl)}&render_js=false`;
+  const targetUrl = `https://poizdato.net/rozklad-po-stantsii/${station}/`;
 
   let html;
   try {
-    const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(25000) });
+    const response = await fetch(targetUrl, {
+      signal: AbortSignal.timeout(20000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' }
+    });
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(502).json({ error: `ScrapingBee відповів ${response.status}`, detail: errText.slice(0, 200) });
+      return res.status(502).json({ error: `poizdato.net відповів ${response.status}` });
     }
     html = await response.text();
   } catch (e) {
     return res.status(502).json({ error: `Не вдалось завантажити: ${e.message}` });
   }
 
-  // Перевірка цілісності — якщо сторінка обірвана на півслові, не парсимо й не кешуємо
   if (!/<\/html>/i.test(html)) {
-    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь від ScrapingBee, спробуйте ще раз' });
+    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь, спробуйте ще раз' });
   }
 
-  // Витягуємо всі tid та номери поїздів
+  // Витягуємо всі посилання на поїзди виду /rozklad-elektrychky/{slug}/
+  // разом з номером поїзда (текст усередині <a>) і напрямком (from/to з двох сусідніх посилань на станції)
   const trains = [];
-  const regex = /\?tid=(\d+)[^"]*"[^>]*>\s*(\d{3,4})\s*<\/a>/g;
+  const rowRegex = /<a[^>]*href="[^"]*\/rozklad-elektrychky\/([^"\/]+)\/"[^>]*>\s*(\d{3,5})\s*<\/a>.*?<a[^>]*\/rozklad-po-stantsii\/[^"]*"[^>]*>\s*([^<]+?)\s*<\/a>.*?<a[^>]*\/rozklad-po-stantsii\/[^"]*"[^>]*>\s*([^<]+?)\s*<\/a>/gs;
   let match;
-  while ((match = regex.exec(html)) !== null) {
-    const tid = match[1];
-    const num = match[2];
-    if (!trains.find(t => t.tid === tid)) {
-      trains.push({ tid, trainNum: num });
+  while ((match = rowRegex.exec(html)) !== null) {
+    const [, slug, trainNum, from, to] = match;
+    if (!trains.find(t => t.slug === slug)) {
+      trains.push({ slug, trainNum, from: from.trim(), to: to.trim() });
     }
   }
 
-  // Діагностичний режим: знаходимо ВСІ посилання на tid= (без вимоги чистого числа всередині <a>)
-  // і показуємо контекст навколо тих, що не потрапили в trains — щоб зрозуміти чому regex їх пропускає
   if (req.query.debug === '1') {
-    const looseRegex = /href="[^"]*\?tid=(\d+)[^"]*"/g;
-    const allTids = new Set();
-    let lm;
-    while ((lm = looseRegex.exec(html)) !== null) {
-      allTids.add(lm[1]);
-    }
-    const foundTids = new Set(trains.map(t => t.tid));
-    const missingTids = [...allTids].filter(t => !foundTids.has(t));
-    const samples = missingTids.slice(0, 10).map(tid => {
-      const idx = html.indexOf(`tid=${tid}`);
-      return { tid, context: html.slice(Math.max(0, idx - 30), idx + 150) };
-    });
+    const looseSlugs = [...html.matchAll(/\/rozklad-elektrychky\/([^"\/]+)\//g)].map(m => m[1]);
+    const uniqueLoose = [...new Set(looseSlugs)];
     return res.status(200).json({
-      sid,
-      totalLinksFound: allTids.size,
+      station,
+      totalLinksFound: uniqueLoose.length,
       parsedTrains: trains.length,
-      missingTids,
-      samples
+      missingSlugs: uniqueLoose.filter(s => !trains.find(t => t.slug === s)),
+      trains
     });
   }
 
-  const result = { sid, trains };
+  const result = { station, trains };
 
-  // 2. Зберігаємо в кеш (не блокуємо відповідь, якщо кеш впаде — не страшно)
   try {
     await redis.set(cacheKey, result, { ex: CACHE_TTL });
   } catch (e) {
