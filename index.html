@@ -133,36 +133,18 @@ PWAInstall.init({ appName: 'Парсер розкладу', swPath: '/sw.js', ba
 /* ========== PRESETS ========== */
 const PRESETS = {
   tereschky: {
-    sid: '2803',
-    stations: ['Головач','Безручки','Клюшники','Зінці','Терешки','Полтава'],
-    oddDir:  { from:'ПОЛТАВА ПІВДЕННА', to:'ТЕРЕШКИ', key:'Терешки', group:'g_polt_ter' },
-    evenDir: { from:'ТЕРЕШКИ', to:'ПОЛТАВА ПІВДЕННА', key:'Терешки', group:'g_ter_polt' },
+    station: 'tereshky',
+    stations: ['Головач','Безручки','Клюшники','Зінці','Терешки','Полтава-Південна'],
+    towardDir: { id:'ter_polt', from:'ТЕРЕШКИ', to:'ПОЛТАВА ПІВДЕННА', key:'Терешки', group:'g_ter_polt' },
+    awayDir:   { id:'polt_ter', from:'ПОЛТАВА ПІВДЕННА', to:'ТЕРЕШКИ', key:'Терешки', group:'g_polt_ter' },
   },
   kopily: {
-    sid: '2637',
-    stations: ['Минівка','Портнівка','Кашубівка','Микільське','Копили','3-й км','Полтава'],
-    oddDir:  { from:'КОПИЛИ', to:'ПОЛТАВА ПІВДЕННА', key:'Копили', group:'g_kop_polt' },
-    evenDir: { from:'ПОЛТАВА ПІВДЕННА', to:'КОПИЛИ', key:'Копили', group:'g_polt_kop' },
+    station: 'kopyly',
+    stations: ['Минівка','Портнівка','Кашубівка','Микільське','Копили','3 Км','Полтава-Південна'],
+    towardDir: { id:'kop_polt', from:'КОПИЛИ', to:'ПОЛТАВА ПІВДЕННА', key:'Копили', group:'g_kop_polt' },
+    awayDir:   { id:'polt_kop', from:'ПОЛТАВА ПІВДЕННА', to:'КОПИЛИ', key:'Копили', group:'g_polt_kop' },
   }
 };
-
-/* ========== STATION MAP ========== */
-const STATION_MAP = [
-  { display: 'Клюшники', search: 'Клюшинки',         useArr: false },
-  { display: '3-й км',   search: '3 км',              useArr: false },
-  { display: 'Полтава',  search: 'Полтава-Південна',  useArr: 'byDir' },
-];
-
-function getStationSearch(name) {
-  const m = STATION_MAP.find(s => s.display === name);
-  return m ? m.search : name;
-}
-function getStationUseArr(name, poltavaIsDestination) {
-  const m = STATION_MAP.find(s => s.display === name);
-  if (!m) return false;
-  if (m.useArr === 'byDir') return poltavaIsDestination;
-  return m.useArr;
-}
 
 /* ========== INIT ========== */
 function onSearchStationChange() {
@@ -174,10 +156,12 @@ function getMode() { return document.getElementById('searchStation').value; }
 
 function getTids() {
   return document.getElementById('tids').value
-    .split(/[\s,\n]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+    .split(/[\s,\n]+/).map(s => s.trim()).filter(Boolean);
 }
 
-/* ========== AUTO LOAD TIDS ========== */
+/* ========== AUTO LOAD SLUGS ========== */
+let _slugRouteMap = {}; // slug -> 'tereschky' | 'kopily'
+
 async function autoLoadTids() {
   const mode = getMode();
   const statusEl = document.getElementById('tidsStatus');
@@ -185,25 +169,25 @@ async function autoLoadTids() {
   statusEl.style.color = 'var(--accent)';
 
   const keys = mode === 'both' ? ['tereschky', 'kopily'] : [mode];
-  const allTids = [];
+  const allSlugs = [];
   const allNums = [];
-  _tidRouteMap = {};
+  _slugRouteMap = {};
 
   const refresh = document.getElementById('forceRefresh').checked;
 
   for (const key of keys) {
     statusEl.textContent = `⏳ Завантажую список поїздів (${key})...`;
     try {
-      const url = `/api/fetch-station?sid=${PRESETS[key].sid}` + (refresh ? '&refresh=1' : '');
+      const url = `/api/fetch-station?station=${PRESETS[key].station}` + (refresh ? '&refresh=1' : '');
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data.trains?.length) throw new Error('Поїзди не знайдені');
       data.trains.forEach(t => {
-        if (!allTids.includes(t.tid)) {
-          allTids.push(t.tid);
+        if (!allSlugs.includes(t.slug)) {
+          allSlugs.push(t.slug);
           allNums.push(t.trainNum);
-          _tidRouteMap[t.tid] = key;  // зберігаємо маршрут одразу
+          _slugRouteMap[t.slug] = key;
         }
       });
     } catch(e) {
@@ -213,58 +197,38 @@ async function autoLoadTids() {
     }
   }
 
-  document.getElementById('tids').value = allTids.join(', ');
+  document.getElementById('tids').value = allSlugs.join(', ');
   statusEl.style.color = 'var(--green)';
-  statusEl.textContent = `✅ Знайдено ${allTids.length} поїздів: ${allNums.join(', ')}`;
-}
-
-/* ========== MATCHING ========== */
-function normalizeStation(name) {
-  return name.replace(/^з[\./]п[\.]?\s*/i, '').replace(/^зп\s+/i, '').trim().toLowerCase();
-}
-function matchStation(rawName, wanted) {
-  const clean = normalizeStation(rawName);
-  const w = wanted.toLowerCase();
-  if (clean === w) return true;
-  const cleanND = clean.replace(/[\s\-]/g, '');
-  const wND = w.replace(/[\s\-]/g, '');
-  if (cleanND === wND) return true;
-  // Входження — але тільки якщо clean не набагато довший (Головач ≠ Головачанська)
-  if (w.includes(clean) && clean.length >= 4) return true;
-  if (clean.includes(w) && clean.length <= w.length + 4) return true;
-  // Перші 6 букв + близька довжина (для опечаток)
-  if (clean.length >= 5 && w.length >= 5 && clean.slice(0,6) === w.slice(0,6)
-      && Math.abs(clean.length - w.length) <= 4) return true;
-  return false;
-}
-function findTime(stations, wanted, useArr = false) {
-  for (const s of stations) {
-    if (matchStation(s.name, wanted)) {
-      return useArr ? (s.arr || s.dep || '-') : (s.dep || s.arr || '-');
-    }
-  }
-  return '-';
+  statusEl.textContent = `✅ Знайдено ${allSlugs.length} поїздів: ${allNums.join(', ')}`;
 }
 
 /* ========== FETCH ========== */
-async function fetchTrain(tid, attempt = 0) {
+async function fetchTrain(slug, attempt = 0) {
   try {
     const refresh = document.getElementById('forceRefresh').checked;
-    const url = `/api/fetch-timetable?tid=${tid}` + (refresh ? '&refresh=1' : '');
+    const url = `/api/fetch-timetable?slug=${encodeURIComponent(slug)}` + (refresh ? '&refresh=1' : '');
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch(e) {
     if (attempt < 2) {
       await new Promise(r => setTimeout(r, 1000));
-      return fetchTrain(tid, attempt + 1);
+      return fetchTrain(slug, attempt + 1);
     }
     throw e;
   }
 }
 
+// Визначаємо маршрут поїзда за назвами станцій у його розкладі (fallback, якщо autoLoad не викликався)
+function guessRoute(stations) {
+  const names = stations.map(s => s.name);
+  if (names.some(n => n.includes('Терешки'))) return 'tereschky';
+  if (names.some(n => n.includes('Копили'))) return 'kopily';
+  return null;
+}
+
 /* ========== STATE ========== */
-let _state = { mode: null, results: [], failedTids: [] };
+let _state = { mode: null, results: [], failedSlugs: [] };
 
 function setStatus(msg, type='info') {
   const el = document.getElementById('status');
@@ -277,85 +241,83 @@ function setProgress(pct) {
 }
 
 async function startParsing() {
-  const tids = getTids();
+  const slugs = getTids();
   const mode = getMode();
-  if (!tids.length) { setStatus('Введіть TID поїздів', 'error'); return; }
-  _state = { mode, results: [], failedTids: [] };
+  if (!slugs.length) { setStatus('Введіть поїзди (або натисніть "Завантажити автоматично")', 'error'); return; }
+  _state = { mode, results: [], failedSlugs: [] };
   document.getElementById('output').innerHTML = '';
   document.getElementById('retryBtn').style.display = 'none';
   document.getElementById('copyAllBtn').style.display = 'none';
-  await runFetch(tids);
+  document.getElementById('saveFileBtn').style.display = 'none';
+  await runFetch(slugs);
 }
 
 async function retryFailed() {
-  if (!_state.failedTids.length) return;
-  const tids = [..._state.failedTids];
-  _state.failedTids = [];
+  if (!_state.failedSlugs.length) return;
+  const slugs = [..._state.failedSlugs];
+  _state.failedSlugs = [];
   document.getElementById('retryBtn').style.display = 'none';
-  await runFetch(tids);
+  await runFetch(slugs);
 }
 
 // Обмежений паралелізм
-async function fetchWithLimit(tids, concurrency, onEach) {
-  const queue = [...tids];
+async function fetchWithLimit(items, concurrency, onEach) {
+  const queue = [...items];
   const results = [];
   async function worker() {
     while (queue.length) {
-      const tid = queue.shift();
-      results.push(await onEach(tid));
+      const item = queue.shift();
+      results.push(await onEach(item));
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, tids.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
   return results;
 }
 
-// Визначаємо до якого маршруту належить поїзд за його TID
-// Кожен TID зберігаємо разом із маршрутом при autoLoad
-let _tidRouteMap = {}; // tid -> 'tereschky' | 'kopily'
-
-async function runFetch(tids) {
-  const { mode } = _state;
+async function runFetch(slugs) {
   document.getElementById('parseBtn').disabled = true;
-  setStatus(`Завантажую ${tids.length} поїздів (макс. 4 паралельно)...`, 'info');
+  setStatus(`Завантажую ${slugs.length} поїздів (макс. 4 паралельно)...`, 'info');
   setProgress(10);
 
   let done = 0;
-  const allResults = await fetchWithLimit(tids, 4, async tid => {
+  const allResults = await fetchWithLimit(slugs, 4, async slug => {
     try {
-      const data = await fetchTrain(tid);
-      const trainNum = parseInt(data.trainNum) || 0;
-      const isOdd = trainNum % 2 === 1;
+      const data = await fetchTrain(slug);
+      const routeKey = _slugRouteMap[slug] || guessRoute(data.stations || []);
+      if (!routeKey) throw new Error('Невідомий маршрут для цього поїзда');
 
-      // Визначаємо маршрут цього поїзду
-      const routeKey = _tidRouteMap[tid] || (mode !== 'both' ? mode : guessRoute(data.stations));
-
-      const preset = PRESETS[routeKey] || PRESETS['tereschky'];
-      const stations = preset.stations;
-      const isT = routeKey === 'tereschky';
-      const poltavaIsDestination = isT ? !isOdd : isOdd;
+      const preset = PRESETS[routeKey];
+      const timesMap = {};
+      (data.stations || []).forEach(s => { timesMap[s.name] = s; });
 
       const times = {};
-      stations.forEach(st => {
-        times[st] = findTime(data.stations, getStationSearch(st), getStationUseArr(st, poltavaIsDestination));
+      preset.stations.forEach(st => {
+        const s = timesMap[st];
+        times[st] = s ? (s.dep || s.arr || '-') : '-';
       });
+
+      // Напрямок визначаємо по тому, чи є відправлення чи прибуття на Полтаві-Південній
+      const poltava = timesMap['Полтава-Південна'];
+      const direction = (poltava && poltava.arr && !poltava.dep) ? 'toward' : 'away';
+
       done++;
-      setProgress(10 + Math.round(done / tids.length * 85));
-      setStatus(`Завантажую... ${done}/${tids.length}`, 'info');
-      return { tid, trainNum: data.trainNum, times, parity: trainNum % 2, routeKey, stations };
+      setProgress(10 + Math.round(done / slugs.length * 85));
+      setStatus(`Завантажую... ${done}/${slugs.length}`, 'info');
+      return { slug, trainNum: data.trainNum, times, routeKey, direction };
     } catch(e) {
-      console.warn(`tid=${tid}:`, e.message);
+      console.warn(`slug=${slug}:`, e.message);
       done++;
-      setProgress(10 + Math.round(done / tids.length * 85));
-      return { tid, failed: true };
+      setProgress(10 + Math.round(done / slugs.length * 85));
+      return { slug, failed: true };
     }
   });
 
   allResults.forEach(r => {
     if (!r) return;
     if (r.failed) {
-      _state.failedTids.push(r.tid);
+      _state.failedSlugs.push(r.slug);
     } else {
-      _state.results = _state.results.filter(x => x.tid !== r.tid);
+      _state.results = _state.results.filter(x => x.slug !== r.slug);
       _state.results.push(r);
     }
   });
@@ -364,7 +326,7 @@ async function runFetch(tids) {
   renderAll();
 
   const total = _state.results.length;
-  const failed = _state.failedTids.length;
+  const failed = _state.failedSlugs.length;
   if (!total) {
     setStatus('Нічого не вдалось завантажити', 'error');
   } else if (failed > 0) {
@@ -376,13 +338,6 @@ async function runFetch(tids) {
     setStatus(`✅ Всі ${total} поїздів завантажено.`, 'ok');
   }
   document.getElementById('parseBtn').disabled = false;
-}
-
-// Визначаємо маршрут по назвах станцій у даних
-function guessRoute(stations) {
-  const names = stations.map(s => s.name.toLowerCase());
-  const hasKopily = names.some(n => n.includes('копил'));
-  return hasKopily ? 'kopily' : 'tereschky';
 }
 
 /* ========== RENDER ========== */
@@ -401,38 +356,32 @@ function renderAll() {
 
   keys.forEach(key => {
     const preset = PRESETS[key];
-    const stations = preset.stations;
-    const stationsRev = [...stations].reverse();
-    const isT = key === 'tereschky';
+    const stationsFwd = preset.stations;              // далекий кінець → Полтава
+    const stationsRev = [...stationsFwd].reverse();   // Полтава → далекий кінець
     const routeResults = results.filter(r => r.routeKey === key);
-    const odd  = routeResults.filter(r => r.parity === 1);
-    const even = routeResults.filter(r => r.parity === 0);
-    // dirA — з Полтави (зворотній порядок станцій), dirB — на Полтаву (прямий)
-    const dirA = { trains: isT ? odd  : even, meta: preset.oddDir,  badge: isT ? 'odd' : 'even', stationsOrder: stationsRev };
-    const dirB = { trains: isT ? even : odd,  meta: preset.evenDir, badge: isT ? 'even' : 'odd', stationsOrder: stations };
-    sortByTime(dirA.trains);
-    sortByTime(dirB.trains);
-    if (dirA.trains.length) renderBlock(out, dirA.trains, dirA.stationsOrder, dirA.meta, dirA.badge);
-    if (dirB.trains.length) renderBlock(out, dirB.trains, dirB.stationsOrder, dirB.meta, dirB.badge);
+    const toward = routeResults.filter(r => r.direction === 'toward'); // прямує до Полтави
+    const away   = routeResults.filter(r => r.direction === 'away');  // від Полтави
+
+    sortByTime(toward);
+    sortByTime(away);
+
+    if (toward.length) renderBlock(out, toward, stationsFwd, preset.towardDir);
+    if (away.length)   renderBlock(out, away, stationsRev, preset.awayDir);
   });
 
-  // Показуємо кнопку "Копіювати всі" якщо є результати
   if (results.length) {
     document.getElementById('copyAllBtn').style.display = 'block';
     document.getElementById('saveFileBtn').style.display = 'block';
   }
 }
 
-function renderBlock(container, results, stations, dir, parity) {
+function renderBlock(container, results, stations, dir) {
   const card = document.createElement('div');
   card.className = 'card result-block';
-  const badge = parity === 'odd'
-    ? `<span class="direction-badge dir-odd">непарні</span>`
-    : `<span class="direction-badge dir-even">парні</span>`;
   const hdr = document.createElement('div');
   hdr.className = 'result-header';
   hdr.innerHTML = `
-    <div class="result-title">${dir.from} — ${dir.to} ${badge}</div>
+    <div class="result-title">${dir.from} — ${dir.to}</div>
     <button class="copy-btn">Копіювати JS</button>`;
   card.appendChild(hdr);
 
@@ -474,7 +423,7 @@ function buildJS(results, stations, dir) {
     const isKey = st.toLowerCase().includes(dir.key.toLowerCase());
     return `      { loc: '${st}', times: [${times}], key: ${isKey} },`;
   });
-  return `  {\n    id: '${dir.group}',\n    from: '${dir.from}',\n    to: '${dir.to}',\n    keyStop: '${dir.key}',\n    group: '${dir.group}',\n    cols: ['Станція'${results.map((_,i)=>`, 'Рейс${i+1}'`).join('')}],\n    rows: [\n${rows.join('\n')}\n    ]\n  },`;
+  return `  {\n    id: '${dir.id}',\n    from: '${dir.from}',\n    to: '${dir.to}',\n    keyStop: '${dir.key}',\n    group: '${dir.group}',\n    cols: ['Станція'${results.map((_,i)=>`, 'Рейс${i+1}'`).join('')}],\n    rows: [\n${rows.join('\n')}\n    ]\n  },`;
 }
 
 function copyAll() {
