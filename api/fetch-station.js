@@ -71,6 +71,30 @@ export default async function handler(req, res) {
     }
   }
 
+  // Діагностичний режим: знаходимо ВСІ посилання на tid= (без вимоги чистого числа всередині <a>)
+  // і показуємо контекст навколо тих, що не потрапили в trains — щоб зрозуміти чому regex їх пропускає
+  if (req.query.debug === '1') {
+    const looseRegex = /href="[^"]*\?tid=(\d+)[^"]*"/g;
+    const allTids = new Set();
+    let lm;
+    while ((lm = looseRegex.exec(html)) !== null) {
+      allTids.add(lm[1]);
+    }
+    const foundTids = new Set(trains.map(t => t.tid));
+    const missingTids = [...allTids].filter(t => !foundTids.has(t));
+    const samples = missingTids.slice(0, 10).map(tid => {
+      const idx = html.indexOf(`tid=${tid}`);
+      return { tid, context: html.slice(Math.max(0, idx - 30), idx + 150) };
+    });
+    return res.status(200).json({
+      sid,
+      totalLinksFound: allTids.size,
+      parsedTrains: trains.length,
+      missingTids,
+      samples
+    });
+  }
+
   const result = { sid, trains };
 
   // 2. Зберігаємо в кеш (не блокуємо відповідь, якщо кеш впаде — не страшно)
