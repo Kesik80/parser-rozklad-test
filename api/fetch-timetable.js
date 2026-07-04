@@ -1,21 +1,25 @@
+// api/fetch-timetable.js
+// Завантажує повний маршрут конкретного поїзда з poizdato.net
+// GET /api/fetch-timetable?slug=6538--kobeliaky--poltava-pivdenna
+// GET /api/fetch-timetable?slug=...&refresh=1
+
 import { Redis } from '@upstash/redis';
 
 const redis = Redis.fromEnv();
-const CACHE_TTL = 60 * 60 * 24; // 24 години — розклад поїзда змінюється рідко
+const CACHE_TTL = 60 * 60 * 24; // 24 години
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { tid, refresh } = req.query;
-  if (!tid || !/^\d+$/.test(tid)) {
-    return res.status(400).json({ error: 'Потрібен параметр tid (число)' });
+  const { slug, refresh } = req.query;
+  if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
+    return res.status(400).json({ error: 'Потрібен параметр slug' });
   }
 
-  const cacheKey = `timetable:${tid}`;
+  const cacheKey = `ptimetable:${slug}`;
   const forceRefresh = refresh === '1' || refresh === 'true';
 
-  // 1. Пробуємо кеш (якщо не примусове оновлення)
   if (!forceRefresh) {
     try {
       const cached = await redis.get(cacheKey);
@@ -29,33 +33,28 @@ export default async function handler(req, res) {
     }
   }
 
-  const apiKey = process.env.SCRAPINGBEE_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'SCRAPINGBEE_KEY не налаштований' });
-
-  const targetUrl = `https://swrailway.gov.ua/timetable/eltrain3-5/?tid=${tid}`;
-  const proxyUrl = `https://app.scrapingbee.com/api/v1/?api_key=${apiKey}&url=${encodeURIComponent(targetUrl)}&render_js=false`;
+  const targetUrl = `https://poizdato.net/rozklad-elektrychky/${slug}/`;
 
   let html;
   try {
-    const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(25000) });
+    const response = await fetch(targetUrl, {
+      signal: AbortSignal.timeout(20000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' }
+    });
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(502).json({ error: `ScrapingBee ${response.status}`, detail: errText.slice(0, 200) });
+      return res.status(502).json({ error: `poizdato.net відповів ${response.status}` });
     }
     html = await response.text();
-  } catch(e) {
+  } catch (e) {
     return res.status(502).json({ error: e.message });
   }
 
-  // Перевірка цілісності — якщо сторінка обірвана на півслові, не кешуємо биту відповідь
   if (!/<\/html>/i.test(html)) {
-    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь від ScrapingBee, спробуйте ще раз' });
+    return res.status(502).json({ error: 'Отримано обірвану (неповну) відповідь, спробуйте ще раз' });
   }
 
-  const result = parseTimetable(html, tid);
+  const result = parseTimetable(html, slug);
 
-  // 2. Зберігаємо в кеш тільки якщо парсинг дав хоч якісь станції
-  // (щоб не закешувати випадково порожню/биту відповідь)
   if (result.stations && result.stations.length > 0) {
     try {
       await redis.set(cacheKey, result, { ex: CACHE_TTL });
@@ -73,19 +72,31 @@ function cleanTd(html) {
   return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function isTime(s) { return /^\d{2}:\d{2}$/.test(s); }
-function isDash(s) { return s === '–' || s === '-'; }
+// poizdato.net пише час через крапку: "06.44" -> конвертуємо в "06:44"
+function normTime(s) {
+  const m = s.match(/^(\d{2})\.(\d{2})$/);
+  return m ? `${m[1]}:${m[2]}` : null;
+}
 
-function parseTimetable(html, tid) {
-  // Номер поїзду — в тегу <b>XXXX</b>
-  const trainNumMatch = html.match(/<b>(\d{4})<\/b>/);
-  const trainNum = trainNumMatch ? trainNumMatch[1] : null;
+function parseTimetable(html, slug) {
+  const trainNum = slug.split('--')[0] || null;
+
+  // Знаходимо таблицю розкладу — шукаємо за словом "Прибуття" в заголовку
+  const headerIdx = html.indexOf('Прибуття');
+  if (headerIdx === -1) return { slug, trainNum, stations: [] };
+
+  const tableStart = html.lastIndexOf('<table', headerIdx);
+  const tableEndTag = html.indexOf('</table>', headerIdx);
+  if (tableStart === -1 || tableEndTag === -1) return { slug, trainNum, stations: [] };
+
+  const tableHtml = html.slice(tableStart, tableEndTag + 8);
 
   const stations = [];
   const rowRegex = /<tr[^>]*>(.*?)<\/tr>/gis;
   let m;
+  let isFirstRow = true;
 
-  while ((m = rowRegex.exec(html)) !== null) {
+  while ((m = rowRegex.exec(tableHtml)) !== null) {
     const row = m[1];
     const tds = [];
     const tdRegex = /<td[^>]*>(.*?)<\/td>/gis;
@@ -93,26 +104,18 @@ function parseTimetable(html, tid) {
     while ((td = tdRegex.exec(row)) !== null) {
       tds.push(cleanTd(td[1]));
     }
+    if (tds.length < 4) { isFirstRow = false; continue; } // пропускаємо заголовок
 
-    // Структура рядка станції: [номер, назва, прибуття, відправлення, стоянка, ...]
-    // tds[0] = номер (ціле число)
-    // tds[1] = назва станції (кирилиця)
-    // tds[2] = прибуття (HH:MM або –)
-    // tds[3] = відправлення (HH:MM або –)
-    if (tds.length < 4) continue;
-    if (!/^\d+$/.test(tds[0])) continue;  // перша td має бути номером рядка
-    const name = tds[1];
-    if (!/[А-ЯІЇЄа-яіїє]{2,}/.test(name)) continue;
+    const name = tds[0];
+    if (!/[А-ЯІЇЄа-яіїє]{2,}/.test(name)) { continue; }
 
-    const arrRaw = tds[2];
-    const depRaw = tds[3];
-    const arr = isTime(arrRaw) ? arrRaw : null;
-    const dep = isTime(depRaw) ? depRaw : null;
-
+    const arr = normTime(tds[1]);
+    const dep = normTime(tds[3]);
     if (arr || dep) {
       stations.push({ name, arr, dep });
     }
+    isFirstRow = false;
   }
 
-  return { tid, trainNum, stations };
+  return { slug, trainNum, stations };
 }
