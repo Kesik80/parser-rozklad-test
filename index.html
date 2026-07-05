@@ -189,6 +189,11 @@ const PRESETS = {
 
 function getSource() { return document.getElementById('dataSource').value; }
 
+// Для відображення в таблиці та експорті "Полтава-Південна" скорочуємо до "Полтава"
+function displayName(st) {
+  return st === 'Полтава-Південна' ? 'Полтава' : st;
+}
+
 /* ========== STATION MAP (тільки для swrailway — там інші написання) ========== */
 const STATION_MAP = [
   { display: 'Клюшники', search: 'Клюшинки',         useArr: false },
@@ -504,7 +509,7 @@ function renderBlock(container, results, stations, dir) {
   results.forEach(r => { html += `<th>🚂${r.trainNum||'?'}</th>`; });
   html += '</tr>';
   stations.forEach(st => {
-    html += `<tr><td class="s">${st}</td>`;
+    html += `<tr><td class="s">${displayName(st)}</td>`;
     results.forEach(r => {
       const t = r.times[st] || '-';
       html += `<td class="${t==='-'?'miss':''}">${t}</td>`;
@@ -534,7 +539,7 @@ function buildJS(results, stations, dir) {
   const rows = stations.map(st => {
     const times = results.map(r => `'${r.times[st]||'-'}'`).join(', ');
     const isKey = st.toLowerCase().includes(dir.key.toLowerCase());
-    return `      { loc: '${st}', times: [${times}], key: ${isKey} },`;
+    return `      { loc: '${displayName(st)}', times: [${times}], key: ${isKey} },`;
   });
   return `  {\n    id: '${dir.id}',\n    from: '${dir.from}',\n    to: '${dir.to}',\n    keyStop: '${dir.key}',\n    group: '${dir.group}',\n    cols: ['Станція'${results.map((_,i)=>`, 'Рейс${i+1}'`).join('')}],\n    rows: [\n${rows.join('\n')}\n    ]\n  },`;
 }
