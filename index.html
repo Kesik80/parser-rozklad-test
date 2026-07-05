@@ -189,9 +189,11 @@ const PRESETS = {
 
 function getSource() { return document.getElementById('dataSource').value; }
 
-// Для відображення в таблиці та експорті "Полтава-Південна" скорочуємо до "Полтава"
+// Для відображення в таблиці та експорті приводимо деякі назви до звичного вигляду
 function displayName(st) {
-  return st === 'Полтава-Південна' ? 'Полтава' : st;
+  if (st === 'Полтава-Південна') return 'Полтава';
+  if (st === '3 Км') return '3 км';
+  return st;
 }
 
 /* ========== STATION MAP (тільки для swrailway — там інші написання) ========== */
