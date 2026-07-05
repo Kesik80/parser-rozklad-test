@@ -189,6 +189,48 @@ const PRESETS = {
 
 function getSource() { return document.getElementById('dataSource').value; }
 
+/* ========== STATION MAP (тільки для swrailway — там інші написання) ========== */
+const STATION_MAP = [
+  { display: 'Клюшники', search: 'Клюшинки',         useArr: false },
+  { display: '3 Км',      search: '3 км',              useArr: false },
+  { display: 'Полтава-Південна', search: 'Полтава-Південна', useArr: 'byDir' },
+];
+
+function getStationSearch(name) {
+  const m = STATION_MAP.find(s => s.display === name);
+  return m ? m.search : name;
+}
+function getStationUseArr(name, poltavaIsDestination) {
+  const m = STATION_MAP.find(s => s.display === name);
+  if (!m) return false;
+  if (m.useArr === 'byDir') return poltavaIsDestination;
+  return m.useArr;
+}
+function normalizeStation(name) {
+  return name.replace(/^з[\./]п[\.]?\s*/i, '').replace(/^зп\s+/i, '').trim().toLowerCase();
+}
+function matchStation(rawName, wanted) {
+  const clean = normalizeStation(rawName);
+  const w = wanted.toLowerCase();
+  if (clean === w) return true;
+  const cleanND = clean.replace(/[\s\-]/g, '');
+  const wND = w.replace(/[\s\-]/g, '');
+  if (cleanND === wND) return true;
+  if (w.includes(clean) && clean.length >= 4) return true;
+  if (clean.includes(w) && clean.length <= w.length + 4) return true;
+  if (clean.length >= 5 && w.length >= 5 && clean.slice(0,6) === w.slice(0,6)
+      && Math.abs(clean.length - w.length) <= 4) return true;
+  return false;
+}
+function findTime(stations, wanted, useArr = false) {
+  for (const s of stations) {
+    if (matchStation(s.name, wanted)) {
+      return useArr ? (s.arr || s.dep || '-') : (s.dep || s.arr || '-');
+    }
+  }
+  return '-';
+}
+
 /* ========== INIT ========== */
 function onSearchStationChange() {
   document.getElementById('tids').value = '';
@@ -346,26 +388,29 @@ async function runFetch(slugs) {
       if (!routeKey) throw new Error('Невідомий маршрут для цього поїзда');
 
       const preset = PRESETS[routeKey];
-      const timesMap = {};
-      (data.stations || []).forEach(s => { timesMap[s.name] = s; });
-
-      const times = {};
-      preset.stations.forEach(st => {
-        const s = timesMap[st];
-        times[st] = s ? (s.dep || s.arr || '-') : '-';
-      });
-
+      let times = {};
       let direction;
+
       if (source === 'poizdato') {
+        const timesMap = {};
+        (data.stations || []).forEach(s => { timesMap[s.name] = s; });
+        preset.stations.forEach(st => {
+          const s = timesMap[st];
+          times[st] = s ? (s.dep || s.arr || '-') : '-';
+        });
         // Напрямок визначаємо по тому, чи є відправлення чи прибуття на Полтаві-Південній
         const poltava = timesMap['Полтава-Південна'];
         direction = (poltava && poltava.arr && !poltava.dep) ? 'toward' : 'away';
       } else {
-        // swrailway: напрямок визначаємо за парністю номера поїзда (парність, що відповідає руху "до Полтави", своя для кожного маршруту)
+        // swrailway: напрямок за парністю номера поїзда, станції — через нечітке співставлення (STATION_MAP)
         const trainNum = parseInt(data.trainNum) || 0;
         const isOdd = trainNum % 2 === 1;
         const towardIsOdd = preset.towardParity === 'odd';
         direction = (isOdd === towardIsOdd) ? 'toward' : 'away';
+        const poltavaIsDestination = direction === 'toward';
+        preset.stations.forEach(st => {
+          times[st] = findTime(data.stations || [], getStationSearch(st), getStationUseArr(st, poltavaIsDestination));
+        });
       }
 
       done++;
