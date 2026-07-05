@@ -114,6 +114,29 @@ pre { background:var(--bg-2); border-radius:8px; padding:10px; font-size:11px; c
     <input type="checkbox" id="forceRefresh" style="width:auto;accent-color:var(--accent);">
     <span style="font-size:13px;color:var(--label-2);">Ігнорувати кеш (примусово оновити з сайту)</span>
   </label>
+  <label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;">
+    <input type="checkbox" id="includeSpecial" style="width:auto;accent-color:var(--accent);">
+    <span style="font-size:13px;color:var(--label-2);">Показувати також поїзди з особливим графіком</span>
+  </label>
+
+  <div style="margin-top:14px;">
+    <button type="button" class="btn-icon" style="width:100%;font-size:13px;display:flex;justify-content:space-between;align-items:center;" onclick="toggleVerifyBlock()">
+      <span>Перевірити вручну</span>
+      <span id="verifyToggleIcon">▾</span>
+    </button>
+    <div id="verifyBlock" style="display:none;margin-top:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:13px;color:var(--label);flex-shrink:0;width:70px;">Терешки</span>
+        <a href="https://poizdato.net/rozklad-po-stantsii/tereshky/" target="_blank" class="btn-icon" style="font-size:12px;text-decoration:none;flex:1;text-align:center;">poizdato</a>
+        <a href="https://swrailway.gov.ua/timetable/eltrain/?sid=2803" target="_blank" class="btn-icon" style="font-size:12px;text-decoration:none;flex:1;text-align:center;">swrailway</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <span style="font-size:13px;color:var(--label);flex-shrink:0;width:70px;">Копили</span>
+        <a href="https://poizdato.net/rozklad-po-stantsii/kopyly/" target="_blank" class="btn-icon" style="font-size:12px;text-decoration:none;flex:1;text-align:center;">poizdato</a>
+        <a href="https://swrailway.gov.ua/timetable/eltrain/?sid=2637" target="_blank" class="btn-icon" style="font-size:12px;text-decoration:none;flex:1;text-align:center;">swrailway</a>
+      </div>
+    </div>
+  </div>
 </div>
 
 <button class="btn btn-primary" id="parseBtn" onclick="startParsing()">🔍 Завантажити розклад</button>
@@ -131,6 +154,14 @@ pre { background:var(--bg-2); border-radius:8px; padding:10px; font-size:11px; c
 PWAInstall.init({ appName: 'Парсер розкладу', swPath: '/sw.js', bannerBg: '#0a0a0f', themeColor: '#000000', themeColorLight: '#000000' });
 
 /* ========== PRESETS ========== */
+function toggleVerifyBlock() {
+  const block = document.getElementById('verifyBlock');
+  const icon = document.getElementById('verifyToggleIcon');
+  const isHidden = block.style.display === 'none';
+  block.style.display = isHidden ? 'block' : 'none';
+  icon.textContent = isHidden ? '▴' : '▾';
+}
+
 const PRESETS = {
   tereschky: {
     station: 'tereshky',
@@ -178,7 +209,9 @@ async function autoLoadTids() {
   for (const key of keys) {
     statusEl.textContent = `⏳ Завантажую список поїздів (${key})...`;
     try {
-      const url = `/api/fetch-station?station=${PRESETS[key].station}` + (refresh ? '&refresh=1' : '');
+      const url = `/api/fetch-station?station=${PRESETS[key].station}`
+        + (refresh ? '&refresh=1' : '')
+        + (document.getElementById('includeSpecial').checked ? '&includeSpecial=1' : '');
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
