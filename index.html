@@ -98,6 +98,12 @@ pre { background:var(--bg-2); border-radius:8px; padding:10px; font-size:11px; c
 <div class="card">
   <div class="card-title">Налаштування</div>
 
+  <label>Джерело даних</label>
+  <select id="dataSource" onchange="onSearchStationChange()">
+    <option value="poizdato">poizdato.net (без проксі, швидко)</option>
+    <option value="swrailway">swrailway.gov.ua (через ScrapingBee)</option>
+  </select>
+
   <label>Маршрут</label>
   <select id="searchStation" onchange="onSearchStationChange()">
     <option value="both">Обидва маршрути (Терешки + Копили)</option>
@@ -164,18 +170,24 @@ function toggleVerifyBlock() {
 
 const PRESETS = {
   tereschky: {
-    station: 'tereshky',
     stations: ['Головач','Безручки','Клюшники','Зінці','Терешки','Полтава-Південна'],
     towardDir: { id:'ter_polt', from:'ТЕРЕШКИ', to:'ПОЛТАВА ПІВДЕННА', key:'Терешки', group:'g_ter_polt' },
     awayDir:   { id:'polt_ter', from:'ПОЛТАВА ПІВДЕННА', to:'ТЕРЕШКИ', key:'Терешки', group:'g_polt_ter' },
+    towardParity: 'even', // на Терешках непарні йдуть ВІД Полтави, парні — ДО Полтави
+    poizdato: { station: 'tereshky' },
+    swrailway: { sid: '2803' },
   },
   kopily: {
-    station: 'kopyly',
     stations: ['Минівка','Портнівка','Кашубівка','Микільське','Копили','3 Км','Полтава-Південна'],
     towardDir: { id:'kop_polt', from:'КОПИЛИ', to:'ПОЛТАВА ПІВДЕННА', key:'Копили', group:'g_kop_polt' },
     awayDir:   { id:'polt_kop', from:'ПОЛТАВА ПІВДЕННА', to:'КОПИЛИ', key:'Копили', group:'g_polt_kop' },
+    towardParity: 'odd', // на Копилах непарні йдуть ДО Полтави, парні — ВІД Полтави
+    poizdato: { station: 'kopyly' },
+    swrailway: { sid: '2637' },
   }
 };
+
+function getSource() { return document.getElementById('dataSource').value; }
 
 /* ========== INIT ========== */
 function onSearchStationChange() {
@@ -195,6 +207,7 @@ let _slugRouteMap = {}; // slug -> 'tereschky' | 'kopily'
 
 async function autoLoadTids() {
   const mode = getMode();
+  const source = getSource();
   const statusEl = document.getElementById('tidsStatus');
   statusEl.style.display = 'block';
   statusEl.style.color = 'var(--accent)';
@@ -205,22 +218,31 @@ async function autoLoadTids() {
   _slugRouteMap = {};
 
   const refresh = document.getElementById('forceRefresh').checked;
+  const includeSpecial = document.getElementById('includeSpecial').checked;
 
   for (const key of keys) {
     statusEl.textContent = `⏳ Завантажую список поїздів (${key})...`;
     try {
-      const url = `/api/fetch-station?station=${PRESETS[key].station}`
-        + (refresh ? '&refresh=1' : '')
-        + (document.getElementById('includeSpecial').checked ? '&includeSpecial=1' : '');
+      let url, idField;
+      if (source === 'poizdato') {
+        url = `/api/fetch-station?station=${PRESETS[key].poizdato.station}`
+          + (refresh ? '&refresh=1' : '')
+          + (includeSpecial ? '&includeSpecial=1' : '');
+        idField = 'slug';
+      } else {
+        url = `/api/fetch-station-sw?sid=${PRESETS[key].swrailway.sid}` + (refresh ? '&refresh=1' : '');
+        idField = 'tid';
+      }
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data.trains?.length) throw new Error('Поїзди не знайдені');
       data.trains.forEach(t => {
-        if (!allSlugs.includes(t.slug)) {
-          allSlugs.push(t.slug);
+        const id = String(t[idField]);
+        if (!allSlugs.includes(id)) {
+          allSlugs.push(id);
           allNums.push(t.trainNum);
-          _slugRouteMap[t.slug] = key;
+          _slugRouteMap[id] = key;
         }
       });
     } catch(e) {
@@ -236,17 +258,20 @@ async function autoLoadTids() {
 }
 
 /* ========== FETCH ========== */
-async function fetchTrain(slug, attempt = 0) {
+async function fetchTrain(id, attempt = 0) {
   try {
     const refresh = document.getElementById('forceRefresh').checked;
-    const url = `/api/fetch-timetable?slug=${encodeURIComponent(slug)}` + (refresh ? '&refresh=1' : '');
+    const source = getSource();
+    const url = source === 'poizdato'
+      ? `/api/fetch-timetable?slug=${encodeURIComponent(id)}` + (refresh ? '&refresh=1' : '')
+      : `/api/fetch-timetable-sw?tid=${encodeURIComponent(id)}` + (refresh ? '&refresh=1' : '');
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch(e) {
     if (attempt < 2) {
       await new Promise(r => setTimeout(r, 1000));
-      return fetchTrain(slug, attempt + 1);
+      return fetchTrain(id, attempt + 1);
     }
     throw e;
   }
@@ -313,10 +338,11 @@ async function runFetch(slugs) {
   setProgress(10);
 
   let done = 0;
-  const allResults = await fetchWithLimit(slugs, 4, async slug => {
+  const source = getSource();
+  const allResults = await fetchWithLimit(slugs, 4, async id => {
     try {
-      const data = await fetchTrain(slug);
-      const routeKey = _slugRouteMap[slug] || guessRoute(data.stations || []);
+      const data = await fetchTrain(id);
+      const routeKey = _slugRouteMap[id] || guessRoute(data.stations || []);
       if (!routeKey) throw new Error('Невідомий маршрут для цього поїзда');
 
       const preset = PRESETS[routeKey];
@@ -329,19 +355,28 @@ async function runFetch(slugs) {
         times[st] = s ? (s.dep || s.arr || '-') : '-';
       });
 
-      // Напрямок визначаємо по тому, чи є відправлення чи прибуття на Полтаві-Південній
-      const poltava = timesMap['Полтава-Південна'];
-      const direction = (poltava && poltava.arr && !poltava.dep) ? 'toward' : 'away';
+      let direction;
+      if (source === 'poizdato') {
+        // Напрямок визначаємо по тому, чи є відправлення чи прибуття на Полтаві-Південній
+        const poltava = timesMap['Полтава-Південна'];
+        direction = (poltava && poltava.arr && !poltava.dep) ? 'toward' : 'away';
+      } else {
+        // swrailway: напрямок визначаємо за парністю номера поїзда (парність, що відповідає руху "до Полтави", своя для кожного маршруту)
+        const trainNum = parseInt(data.trainNum) || 0;
+        const isOdd = trainNum % 2 === 1;
+        const towardIsOdd = preset.towardParity === 'odd';
+        direction = (isOdd === towardIsOdd) ? 'toward' : 'away';
+      }
 
       done++;
       setProgress(10 + Math.round(done / slugs.length * 85));
       setStatus(`Завантажую... ${done}/${slugs.length}`, 'info');
-      return { slug, trainNum: data.trainNum, times, routeKey, direction };
+      return { slug: id, trainNum: data.trainNum, times, routeKey, direction };
     } catch(e) {
-      console.warn(`slug=${slug}:`, e.message);
+      console.warn(`id=${id}:`, e.message);
       done++;
       setProgress(10 + Math.round(done / slugs.length * 85));
-      return { slug, failed: true };
+      return { slug: id, failed: true };
     }
   });
 
