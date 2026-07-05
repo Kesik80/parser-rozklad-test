@@ -18,7 +18,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Потрібен параметр station (слаг станції, напр. tereshky)' });
   }
 
-  const cacheKey = `pstation:${station}`;
+  const includeSpecial = req.query.includeSpecial === '1' || req.query.includeSpecial === 'true';
+  const cacheKey = `pstation:${station}` + (includeSpecial ? ':all' : '');
   const forceRefresh = refresh === '1' || refresh === 'true';
 
   if (!forceRefresh) {
@@ -71,8 +72,9 @@ export default async function handler(req, res) {
     }
   }
 
-  // За замовчуванням залишаємо тільки щоденні поїзди (виключаємо "особливий графік")
-  const trains = allTrains.filter(t => t.daily).map(({ daily, ...rest }) => rest);
+  // За замовчуванням залишаємо тільки щоденні поїзди (виключаємо "особливий графік"),
+  // якщо не передано includeSpecial=1
+  const trains = (includeSpecial ? allTrains : allTrains.filter(t => t.daily)).map(({ daily, ...rest }) => rest);
 
   if (req.query.debug === '1') {
     const looseSlugs = [...html.matchAll(/\/rozklad-elektrychky\/([^"\/]+)\//g)].map(m => m[1]);
